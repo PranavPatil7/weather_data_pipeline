@@ -1,0 +1,151 @@
+version: '3.1'
+
+services:
+  weather_mocker:
+    env_file: .env
+    build:
+      context: ./weather-mocker
+    container_name: weather_mocker
+    ports:
+      - "${WEATHER_MOCKER_PORT}:${WEATHER_MOCKER_PORT}"
+    restart: on-failure
+  weather_data:
+    env_file: .env
+    build:
+      context: ./weather-data
+    container_name: weather_data
+    ports:
+      - "${WEATHER_DATA_PORT}:${WEATHER_DATA_PORT}"
+    restart: on-failure
+  zookeeper:
+    env_file: .env
+    image: bitnami/zookeeper
+    container_name: zookeeper
+    ports:
+      - "${ZOOKEEPER_PORT}:${ZOOKEEPER_PORT}"
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    restart: on-failure
+  kafka:
+    env_file: .env
+    image: bitnami/kafka
+    container_name: kafka
+    ports:
+      - "${KAFKA_PORT}:${KAFKA_PORT}"
+    depends_on:
+      - zookeeper
+    environment:
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://0.0.0.0:${KAFKA_PORT}
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://${KAFKA_HOST}
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=${ZOOKEEPER_HOST}
+    restart: on-failure
+  kafka-create-topic:
+    env_file: .env
+    image: bitnami/kafka
+    container_name: kafka_create_topic
+    entrypoint: [ "/bin/bash", "-c", "cp /kafka-setup.sh /tmp/kafka-setup.sh && chmod +x /tmp/kafka-setup.sh && /tmp/kafka-setup.sh"]
+    environment:
+      - TOPIC_NAME=${KAFKA_TOPIC}
+      - BOOTSTRAP_SERVER=${KAFKA_HOST}
+      - PARTITIONS=${KAFKA_PARTITIONS}
+      - KAFKA_MAX_RETRY=${KAFKA_MAX_RETRY}
+      - KAFKA_RETRY_INTERVAL_SECONDS=${KAFKA_RETRY_INTERVAL_SECONDS}
+      - REPLICATION_FACTOR=${KAFKA_REPLICATION_FACTOR}
+    depends_on:
+      - kafka
+    volumes:
+      - type: bind
+        source: ./kafka/kafka-setup.sh
+        target: /kafka-setup.sh
+    restart: on-failure
+  cassandra-node1:
+    env_file: .env
+    image: bitnami/cassandra
+    container_name: cassandra_node1
+    ports:
+      - "${CASSANDRA_PORT}:${CASSANDRA_PORT}"
+    volumes:
+      - cassandra-data:/bitnami/cassandra
+    environment:
+      - CASSANDRA_CLUSTER_NAME=${CASSANDRA_CLUSTER_NAME}
+      - CASSANDRA_DATACENTER=${CASSANDRA_DATACENTER}
+      - CASSANDRA_SEEDS=cassandra-node1
+      - CASSANDRA_LISTEN_ADDRESS=auto
+      - CASSANDRA_USER=${CASSANDRA_USER}
+      - CASSANDRA_PASSWORD=${CASSANDRA_PW}
+    restart: on-failure
+  cassandra-create-keyspace-table:
+    env_file: .env
+    image: bitnami/cassandra
+    container_name: cassandra_create_keyspace_table
+    entrypoint: /bin/bash -c "cp /cassandra-init.sh /tmp/cassandra-init.sh && chmod +x /tmp/cassandra-init.sh && /tmp/cassandra-init.sh"
+    environment:
+      - CASSANDRA_HOST=${CASSANDRA_HOST}
+      - CASSANDRA_PORT=${CASSANDRA_PORT}
+      - CASSANDRA_USER=${CASSANDRA_USER}
+      - CASSANDRA_PW=${CASSANDRA_PW}
+      - CASSANDRA_KEYSPACE=${CASSANDRA_KEYSPACE}
+      - CASSANDRA_TABLE=${CASSANDRA_TABLE}
+      - CASSANDRA_RETRY=${CASSANDRA_RETRY}
+      - CASSANDRA_RETRY_INTERVAL_SECONDS=${CASSANDRA_RETRY_INTERVAL_SECONDS}
+    volumes:
+      - type: bind
+        source: ./cassandra/cassandra-init.sh
+        target: /cassandra-init.sh
+    depends_on:
+      - cassandra-node1
+    restart: on-failure
+  kafka-producer:
+    env_file: .env
+    build:
+      context: ./kafka
+    container_name: kafka_producer
+  spark-consumer:
+    env_file: .env
+    build:
+      context: ./spark-streaming
+    container_name: spark_consumer
+    depends_on:
+      cassandra-create-keyspace-table:
+        condition: service_completed_successfully
+    restart: on-failure
+  grafana:
+    env_file: .env
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - "${GRAFANA_PORT}:${GRAFANA_PORT}"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PW}
+      - GF_USERS_ALLOW_SIGN_UP=${GRAFANA_ALLOW_SIGN_UP}
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ./grafana/grafana-setup.sh:/tmp/grafana-setup.sh:ro
+    restart: on-failure
+  grafana-setup:
+    env_file: .env
+    image: grafana/grafana
+    container_name: grafana_setup
+    entrypoint: /bin/bash -c "cp /grafana-setup.sh /tmp/grafana-setup.sh && chmod +x /tmp/grafana-setup.sh && /tmp/grafana-setup.sh"
+    depends_on:
+      - grafana
+    environment:
+      - CASSANDRA_HOST=${CASSANDRA_HOST}
+      - CASSANDRA_PORT=${CASSANDRA_PORT}
+      - CASSANDRA_USER=${CASSANDRA_USER}
+      - CASSANDRA_PW=${CASSANDRA_PW}
+      - GRAFANA_URL=${GRAFANA_URL}
+      - GRAFANA_DATASOURCE_TYPE=${GRAFANA_DATASOURCE_TYPE}
+      - GRAFANA_DATASOURCE_NAME=${GRAFANA_DATASOURCE_NAME}
+      - CASSANDRA_KEYSPACE=${CASSANDRA_KEYSPACE}
+      - CASSANDRA_TABLE=${CASSANDRA_TABLE}
+      - GRAFANA_MAX_RETRY=${GRAFANA_MAX_RETRY}
+      - GRAFANA_RETRY_INTERVAL_SECONDS=${GRAFANA_RETRY_INTERVAL_SECONDS}
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ./grafana/grafana-setup.sh:/grafana-setup.sh:ro
+    restart: on-failure
+volumes:
+  cassandra-data:
+  grafana-storage:
